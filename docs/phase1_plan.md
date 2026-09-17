@@ -174,7 +174,7 @@ reports/
 docs/               # source register, target definitions, evaluation contract
 ```
 
-Use Python 3.11+, typed interfaces and Pydantic validation, pandas/NumPy/PyArrow/DuckDB, HTTPX with retry/backoff and per-host rate limits, statsmodels/SciPy/scikit-learn, NetworkX, then LightGBM/SHAP and Streamlit in their relevant phases. Choose and lock exact compatible versions during implementation; the plan does not invent an untested dependency lock. Embeddings are a pinned local model where practical. A deep forecaster is deferred unless the simpler ensemble is demonstrably inadequate and sufficient data exist.
+Use Python 3.12+, typed interfaces and Pydantic validation, pandas/NumPy/PyArrow/DuckDB, HTTPX with retry/backoff and per-host rate limits, statsmodels/SciPy/scikit-learn, NetworkX, then LightGBM/SHAP and Streamlit in their relevant phases. Choose and lock exact compatible versions during implementation; the plan does not invent an untested dependency lock. Embeddings are a pinned local model where practical. A deep forecaster is deferred unless the simpler ensemble is demonstrably inadequate and sufficient data exist.
 
 Connector contracts separate discovery, fetch, parse and release-calendar handling. Forecast models share fit(as-of training data) and predict-distribution(target months, permitted driver paths) semantics. Forecast outputs include samples or a sufficiently rich quantile grid, not only three points. Optional feeds fail with explicit status; mandatory target-data failures stop issuance rather than silently fabricate fresh forecasts.
 

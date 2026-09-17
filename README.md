@@ -4,9 +4,11 @@ A local research pipeline for **SingStat Vegetable Oils CPI**, using World Bank 
 
 Historical performance is **reconstructed**, not a verified historical-vintage backtest. Every new source retrieval and article version keeps its actual availability timestamp. Prospective outcome evaluation is not yet possible because future targets have not matured.
 
+Plans: [approved slice plan](docs/phase1_plan.md) · [research agent roadmap (not implemented)](docs/research_agent_plan.md).
+
 ## Run
 
-Tested on macOS ARM with Python **3.12.14**. Use Python 3.12 with the supplied exact dependency lock; the package code targets Python 3.11+ but this lock is tested on 3.12. No paid API keys are needed.
+Tested on macOS ARM with Python **3.12.14**. Python 3.12+ is required everywhere; the supplied exact dependency lock is tested on 3.12. No paid API keys are needed.
 
 ```bash
 python3.12 -m venv .venv
