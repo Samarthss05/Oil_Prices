@@ -88,9 +88,9 @@ def render_fan(history: pd.Series, forecast: dict, path: Path) -> None:
     ax.fill_between(dates, low, high, color="#2c7fb8", alpha=.18, label="10–90% range")
     switching = len({r["model"] for r in values}) > 1
     ax.plot(dates, median, "o--", color="#2c7fb8", label="Median (models switch)" if switching else "Median")
-    for r, date in zip(values, dates[1:]):
+    for index, (r, date) in enumerate(zip(values, dates[1:])):
         ax.annotate(f"{date:%b %y}\n+{r['effective_steps']}m", (date, r["median"]),
-                    xytext=(0, 12), textcoords="offset points", fontsize=7, ha="center")
+                    xytext=(0, 12 + 24*(index % 2)), textcoords="offset points", fontsize=7, ha="center")
     ax.set(title="Singapore cooking oil · exploratory forecast", ylabel="CPI (2024=100)")
     ax.grid(alpha=.18)
     ax.legend(loc="upper left")

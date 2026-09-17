@@ -62,6 +62,8 @@ The tests establish implemented cutoff behavior, including future-data mutation,
 
 [Collector workflow](.github/workflows/collect-news.yml) runs at minute 17 every three hours UTC, independently of a local Codex session. It needs only Python's standard library and the repository's automatic GitHub token. Each run restores the previous cumulative archive, appends actual retrievals and uploads `news-archive` as an Actions artifact. The latest eight complete backups are retained, each with 90-day expiry; superseded copies are pruned only after the new upload is confirmed. Individual records are immutable and checksummed.
 
+The former local Codex schedule is paused following successful hosted collection and a verified archive restore. Scheduler uptime remains unmeasured until scheduled runs, rather than manual deployment checks, accumulate.
+
 This is not an always-on SLA: GitHub can delay/drop schedules and disable inactive public-repository schedules. A prolonged outage/expiry or storage quota can lose hosted history; export backups periodically. The cloud archive begins at deployment; earlier local records remain in the original local archive. No timestamps are backdated to close gaps. Source success and occupied schedule slots are measured separately from keyword-relevant story counts.
 
 ```sh

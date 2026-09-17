@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import json
 import shutil
 
 import numpy as np
@@ -12,6 +13,7 @@ def test_saved_slice_page_renders(tmp_path, monkeypatch):
     from streamlit.testing.v1 import AppTest
     from retail_outlook.connectors import assumed_release
     from retail_outlook.pipeline import run
+    from retail_outlook.news import article_record, save_articles
     from retail_outlook.storage import Store
 
     project = Path(__file__).resolve().parents[1]
@@ -33,7 +35,12 @@ def test_saved_slice_page_renders(tmp_path, monkeypatch):
                 raw_hash="synthetic", assumed_available_at=assumed_release(period, 28),
                 release_assumption="synthetic fixture"))
     Store(tmp_path).ingest(records)
-    run(tmp_path, collect_news=False, progress=lambda _: None)
+    save_articles(tmp_path, [article_record(url=f"https://example.test/{number}", title="New biodiesel mandate",
+        retrieved_at=retrieved, connector="fixture", raw_path="fixture", permission_url="fixture")
+        for number, retrieved in enumerate(["2026-01-01T00:00:00Z", "2099-01-01T00:00:00Z"])])
+    result = run(tmp_path, collect_news=False, progress=lambda _: None)
+    news = json.loads((Path(result["directory"])/"news.json").read_text())
+    assert news["eligible_articles"] == news["oil_stories"] == news["collector_health"]["relevant_stories"] == 1
     monkeypatch.setenv("RETAIL_OUTLOOK_ROOT", str(tmp_path))
     script = project / "src/retail_outlook/dashboard.py"
     app = AppTest.from_file(script).run(timeout=30)

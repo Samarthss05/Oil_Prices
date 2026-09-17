@@ -12,7 +12,7 @@ import yaml
 from retail_outlook.connectors import fetch_all
 from retail_outlook.evaluation import current_forecast, freeze_protocol, run_backtest
 from retail_outlook.models import fit_pass_through
-from retail_outlook.news import (collect, extract_all, news_indices, now_utc,
+from retail_outlook.news import (collect, extract_all, news_indices, now_utc, is_oil_relevant,
                                  read_articles, collector_health)
 from retail_outlook.reporting import outlook_note, render_fan
 from retail_outlook.storage import Store, digest, utc_now, write_json
@@ -46,7 +46,7 @@ def run(root: Path, refresh: bool = False, collect_news: bool = True, progress=p
     cutoff = now_utc()
     articles = read_articles(root, cutoff)
     events = extract_all(root, cutoff)
-    relevant_ids = {event["article_id"] for event in events if event["commodities_affected"]}
+    relevant_ids = {article["article_id"] for article in articles if is_oil_relevant(article)}
     news_runs = sorted((root / "data/news/runs").glob("*.json"))
     news = {"as_of": cutoff, "eligible_articles": len(articles), "oil_stories": len({a["story_id"] for a in articles if a["article_id"] in relevant_ids}),
             "recognized_events": sum(e["event_type"] != "UNKNOWN" for e in events),
