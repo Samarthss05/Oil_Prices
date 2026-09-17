@@ -11,7 +11,7 @@ import sys
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Singapore cooking-oil research slice")
-    parser.add_argument("command", choices=["run", "ingest", "collect-news", "extract-news", "annotations", "dashboard"])
+    parser.add_argument("command", choices=["run", "ingest", "collect-news", "extract-news", "annotations", "dashboard", "report"])
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--refresh", action="store_true", help="Retrieve new structured source snapshots")
     parser.add_argument("--no-news", action="store_true", help="Use already collected news; no network collection")
@@ -24,6 +24,13 @@ def main() -> None:
         from retail_outlook.pipeline import run
         result = run(root, args.refresh, not args.no_news)
         print(json.dumps({k: v for k, v in result.items() if k != "forecast"}, indent=2))
+    elif args.command == "report":
+        from retail_outlook.reporting import results_markdown
+        directory = Path(json.loads((root / "artifacts/latest.json").read_text())["directory"])
+        destination = root / "docs/slice_v2_results.md"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(results_markdown(directory))
+        print(destination)
     elif args.command == "ingest":
         import yaml
         from retail_outlook.storage import Store

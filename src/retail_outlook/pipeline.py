@@ -13,7 +13,7 @@ from retail_outlook.connectors import fetch_all
 from retail_outlook.evaluation import current_forecast, freeze_protocol, run_backtest
 from retail_outlook.models import fit_pass_through
 from retail_outlook.news import (collect, extract_all, news_indices, now_utc,
-                                 read_articles)
+                                 read_articles, collector_health)
 from retail_outlook.reporting import outlook_note, render_fan
 from retail_outlook.storage import Store, digest, utc_now, write_json
 
@@ -53,6 +53,8 @@ def run(root: Path, refresh: bool = False, collect_news: bool = True, progress=p
             "citations": [{"title": a["title"], "url": a["url"]} for a in articles if a["article_id"] in relevant_ids][:3],
             "indices": news_indices(events, cutoff), "extraction_validation": "pending human labels; unvalidated",
             "latest_collection": json.loads(news_runs[-1].read_text()) if news_runs else None,
+            "collector_health": collector_health(root, cutoff),
+            "human_labelling": "planned; not completed",
             "paid_cost_usd": 0., "monthly_cap_usd": 50, "paid_historical_backfill": False}
     run_id = pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%S") + "_" + uuid4().hex[:8]
     directory = root / "artifacts/runs" / run_id
@@ -65,12 +67,13 @@ def run(root: Path, refresh: bool = False, collect_news: bool = True, progress=p
     write_json(directory / "relationships.json", relationships, exclusive=True)
     write_json(directory / "news.json", news, exclusive=True)
     write_json(directory / "protocol.json", protocol, exclusive=True)
-    graph = {"nodes": ["palm_oil_usd", "soy_oil_usd", "oil_basket", "usd_sgd", "cpi_cooking_oil"],
-             "edges": [{"from": "palm_oil_usd", "to": "oil_basket", "type": "assumed log weight", "weight": .5},
-                       {"from": "soy_oil_usd", "to": "oil_basket", "type": "assumed log weight", "weight": .5}] +
-             [{"from": "oil_basket" if r["term"].startswith("oil") else "usd_sgd", "to": "cpi_cooking_oil",
-               "lag_months": int(r["term"][-1]), "type": "estimated predictive association", **r}
-              for r in relationships["coefficients"] if r["term"].startswith(("oil", "fx"))]}
+    graph = {"nodes": ["palm_oil_usd", "soy_oil_usd", "usd_sgd", "palm_sgd", "soy_sgd", "cpi_cooking_oil"],
+             "specifications": relationships["specifications"],
+             "edges": [{"from": r["driver"], "to": "cpi_cooking_oil", "type": "conditional polynomial-lag association", **r}
+                       for r in relationships["coefficients"]]}
+    comparison_columns = ["horizon", "model", "before_coverage80", "coverage80", "before_width80", "width80",
+                          "before_interval_score80", "interval_score80", "raw_coverage80", "raw_width80", "raw_interval_score80"]
+    result["effects"].query("scope == 'audit'")[comparison_columns].to_csv(directory / "interval_comparison.csv", index=False)
     write_json(directory / "driver_graph.json", graph, exclusive=True)
     (directory / "outlook.md").write_text(outlook_note(forecast, result["effects"], relationships, news))
     render_fan(panel.cpi_cooking_oil.dropna(), forecast, directory / "fan_chart.png")

@@ -49,34 +49,44 @@ def effect_table(predictions: pd.DataFrame, repetitions: int = 1000, block: int 
                  seed: int = 42) -> pd.DataFrame:
     rows = []
     for (scope, horizon), group in predictions.groupby(["scope", "horizon"]):
-        baseline = group[group.model == "seasonal_naive"].set_index("origin")
+        if not {"random_walk", "seasonal_naive"}.issubset(set(group.model)):
+            raise ValueError("Both random walk and seasonal naive must be scored")
         for model, candidate in group.groupby("model"):
-            pair = candidate.set_index("origin").join(baseline[["mase", "absolute_error"]],
-                                                     how="inner", rsuffix="_baseline").sort_index()
+            pair = candidate.set_index("origin").sort_index()
+            if pair.index.has_duplicates:
+                raise ValueError("Duplicate forecast origins")
+            for prefix, name in (("rw", "random_walk"), ("sn", "seasonal_naive")):
+                baseline = group[group.model == name].set_index("origin")
+                pair = pair.join(baseline[["mase", "absolute_error", "direction_correct"]].add_prefix(prefix+"_"), how="inner")
             n = len(pair)
-            if not n:
-                continue
             ids = block_indices(n, n, repetitions, min(block, n), seed + int(horizon))
-            ae = pair.absolute_error.to_numpy()
-            ba = pair.absolute_error_baseline.to_numpy()
-            cm = pair.mase.to_numpy(dtype=float)
-            bm = pair.mase_baseline.to_numpy(dtype=float)
-            difference = ba[ids].mean(axis=1) - ae[ids].mean(axis=1)
-            denom = bm[ids].mean(axis=1)
-            skill_boot = 100 * (1 - cm[ids].mean(axis=1) / np.where(denom > 0, denom, np.nan))
+            ae, cm = pair.absolute_error.to_numpy(), pair.mase.to_numpy(dtype=float)
             row = {"scope": scope, "horizon": int(horizon), "model": model, "n": n,
-                   "mae_reduction_cpi_points": float(np.mean(ba - ae)),
-                   "mae_reduction_lower95": float(np.quantile(difference, .025)),
-                   "mae_reduction_upper95": float(np.quantile(difference, .975)),
-                   "mase_skill_pct": float(100 * (1 - np.mean(cm) / np.mean(bm))) if np.mean(bm) > 0 else None,
-                   "skill_lower95": float(np.nanquantile(skill_boot, .025)),
-                   "skill_upper95": float(np.nanquantile(skill_boot, .975)),
                    "fallback_count": int(pair.fallback.notna().sum()),
-                   "calibrated_n": int((pair.calibration_n >= 24).sum()),
-                   "coverage80_lower95": float(np.quantile(pair.coverage80.to_numpy()[ids].mean(axis=1), .025)),
-                   "coverage80_upper95": float(np.quantile(pair.coverage80.to_numpy()[ids].mean(axis=1), .975))}
-            for metric in ("mase", "mape", "smape", "pinball", "crps", "coverage80", "width80",
-                           "interval_score80", "direction_correct", "raw_coverage80"):
-                row[metric] = float(pair[metric].mean())
+                   "calibrated_n": int((pair.calibration_n >= 24).sum())}
+            for prefix in ("rw", "sn"):
+                ba, bm = pair[prefix+"_absolute_error"].to_numpy(), pair[prefix+"_mase"].to_numpy(dtype=float)
+                difference = (ba[ids] - ae[ids]).mean(axis=1)
+                denom = bm[ids].mean(axis=1)
+                skills = 100 * (1 - cm[ids].mean(axis=1) / np.where(denom > 0, denom, np.nan))
+                row.update({prefix+"_mae_reduction": float(np.mean(ba-ae)),
+                    prefix+"_mae_lower95": float(np.quantile(difference, .025)),
+                    prefix+"_mae_upper95": float(np.quantile(difference, .975)),
+                    prefix+"_mase_skill_pct": float(100*(1-np.mean(cm)/np.mean(bm))) if np.mean(bm) > 0 else None,
+                    prefix+"_skill_lower95": float(np.nanquantile(skills, .025)),
+                    prefix+"_skill_upper95": float(np.nanquantile(skills, .975)),
+                    prefix+"_directional_accuracy": float(pair[prefix+"_direction_correct"].mean())})
+            # Compatibility names now explicitly refer to the primary RW benchmark.
+            row.update(mae_reduction_cpi_points=row["rw_mae_reduction"], mae_reduction_lower95=row["rw_mae_lower95"],
+                       mae_reduction_upper95=row["rw_mae_upper95"], mase_skill_pct=row["rw_mase_skill_pct"],
+                       skill_lower95=row["rw_skill_lower95"], skill_upper95=row["rw_skill_upper95"])
+            for metric in ("mase", "mape", "smape", "pinball", "crps", "coverage80", "width80", "interval_score80",
+                           "direction_correct", "raw_coverage80", "raw_width80", "raw_interval_score80",
+                           "before_coverage80", "before_width80", "before_interval_score80", "calibration_collapsed"):
+                if metric in pair:
+                    row[metric] = float(pair[metric].mean())
+            for metric in ("coverage80", "width80", "interval_score80"):
+                sims = pair[metric].to_numpy()[ids].mean(axis=1)
+                row[metric+"_lower95"], row[metric+"_upper95"] = map(float, np.quantile(sims, [.025, .975]))
             rows.append(row)
     return pd.DataFrame(rows)

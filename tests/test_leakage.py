@@ -31,8 +31,8 @@ def test_future_data_mutations_leave_prior_forecasts_unchanged(tmp_path):
     a = store.panel(origin, "reconstructed", first)
     b = store.panel(origin, "reconstructed", second)
     pd.testing.assert_frame_equal(a, b)
-    config = dict(models=["seasonal_naive", "ets", "arima", "distributed_lag"], samples=100,
-                  seed=42, horizons=[1, 3, 6], max_driver_lag=3)
+    config = dict(models=["random_walk", "random_walk_rolling", "seasonal_naive", "seasonal_naive_rolling", "ets", "ets_rolling", "arima", "arima_rolling", "distributed_lag", "distributed_lag_usd_fx", "distributed_lag_asymmetric", "distributed_lag_ecm"], samples=100,
+                  seed=42, horizons=[1, 3, 6], max_driver_lag=12)
     ya, da = make_distributions(a, origin, config)
     yb, db = make_distributions(b, origin, config)
     for key in da:

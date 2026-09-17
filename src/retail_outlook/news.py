@@ -17,6 +17,8 @@ import hashlib
 import html
 import json
 import logging
+import os
+import random
 import re
 import time
 import urllib.error
@@ -32,7 +34,7 @@ from typing import Any, Iterator
 LOG = logging.getLogger(__name__)
 UTC = dt.timezone.utc
 SCHEMA_VERSION = 1
-LOCAL_EXTRACTOR_VERSION = "local-rules-v1-unvalidated"
+LOCAL_EXTRACTOR_VERSION = "local-rules-v2-unvalidated"
 DIRECTIONS = {"supply_up", "supply_down", "demand_up", "demand_down", "cost_up", "cost_down", "UNKNOWN"}
 EVENT_TYPES = {"export_restriction", "tariff", "disease_outbreak", "weather_shock", "harvest_report", "energy_price_shock", "currency_move", "shipping_disruption", "policy_subsidy_change", "conflict", "price_move", "UNKNOWN"}
 
@@ -261,11 +263,35 @@ def _fetch(url: str, config: dict[str, Any]) -> tuple[bytes, dict[str, str]]:
             # immediately hammered again or worked around with another endpoint.
             if exc.code not in {500, 502, 503, 504} or attempt + 1 >= int(config.get("max_attempts", 2)):
                 raise
+            if retry_after_seconds(exc.headers.get("Retry-After")) > 60:
+                raise  # Persist long waits across scheduled runs, never truncate Retry-After.
+            delay = max(retry_after_seconds(exc.headers.get("Retry-After")), 2.0 ** (attempt + 1))
         except (urllib.error.URLError, TimeoutError):
             if attempt + 1 >= int(config.get("max_attempts", 2)):
                 raise
-        time.sleep(min(10.0, 2.0 ** (attempt + 1)))
+            delay = 2.0 ** (attempt + 1)
+        time.sleep(delay + random.uniform(0, min(delay*.25, 5)))
     raise RuntimeError("No fetch attempts configured")
+
+
+def retry_after_seconds(value: str | None, now: str | None = None) -> float:
+    if not value:
+        return 0.
+    try:
+        return max(0., float(value))
+    except ValueError:
+        parsed = timestamp(value)
+        return max(0., (_instant(parsed)-_instant(now or now_utc())).total_seconds()) if parsed else 0.
+
+
+def next_gdelt_attempt(prior: dict, error: Exception, config: dict, now: str) -> tuple[str, int]:
+    failures = int(prior.get("consecutive_failures", 0)) + 1
+    base = config.get("backoff_base_seconds", 900)
+    delay = min(config.get("backoff_max_seconds", 86400), base * 2 ** min(failures-1, 16))
+    delay += random.uniform(0, base*.25)
+    if isinstance(error, urllib.error.HTTPError):
+        delay = max(delay, retry_after_seconds(error.headers.get("Retry-After"), now))
+    return (_instant(now)+dt.timedelta(seconds=delay)).isoformat(), failures
 
 
 def collect(root: Path) -> dict[str, Any]:
@@ -274,7 +300,9 @@ def collect(root: Path) -> dict[str, Any]:
     with collection_lock(root):
         started_at = now_utc()
         run_id = started_at.replace(":", "").replace("-", "") + "_" + uuid.uuid4().hex[:8]
-        summary: dict[str, Any] = {"run_id": run_id, "started_at": started_at, "sources": [], "new_article_versions": 0, "paid_cost_usd": 0}
+        summary: dict[str, Any] = {"run_id": run_id, "started_at": started_at, "sources": [], "new_article_versions": 0, "paid_cost_usd": 0,
+            "runner": "github_actions" if os.getenv("GITHUB_ACTIONS") == "true" else "local",
+            "trigger": os.getenv("GITHUB_EVENT_NAME", "manual"), "github_run_id": os.getenv("GITHUB_RUN_ID")}
         sources = []
         if config["gdelt"].get("enabled"):
             gdelt = config["gdelt"]
@@ -285,16 +313,21 @@ def collect(root: Path) -> dict[str, Any]:
             if i:
                 time.sleep(float(config.get("minimum_request_interval_seconds", 5)))
             source_status: dict[str, Any] = {"source": source["name"], "url": source["url"]}
+            previous_status: dict = {}
             if source["kind"] == "gdelt":
                 last_attempt = None
                 for path in sorted((root / "data/news/runs").glob("*.json"), reverse=True):
                     prior = json.loads(path.read_text())
                     match = next((s for s in prior["sources"] if s["source"] == "gdelt_doc" and s.get("status") != "deferred"), None)
                     if match:
+                        previous_status = match
                         last_attempt = match.get("retrieved_at") or match.get("recorded_at")
                         break
-                if last_attempt and (_instant(now_utc()) - _instant(last_attempt)).total_seconds() < int(config["gdelt"].get("minimum_poll_interval_seconds", 900)):
-                    source_status.update(status="deferred", reason="GDELT minimum poll interval; retry on next hourly schedule", previous_attempt_at=last_attempt)
+                due = previous_status.get("next_attempt_at")
+                too_soon = last_attempt and (_instant(now_utc()) - _instant(last_attempt)).total_seconds() < int(config["gdelt"].get("minimum_poll_interval_seconds", 900))
+                if (due and _instant(now_utc()) < _instant(due)) or too_soon:
+                    source_status.update(status="deferred", reason="GDELT persisted backoff/minimum interval", previous_attempt_at=last_attempt,
+                                         next_attempt_at=due, consecutive_failures=previous_status.get("consecutive_failures", 0))
                     summary["sources"].append(source_status)
                     continue
             try:
@@ -309,6 +342,7 @@ def collect(root: Path) -> dict[str, Any]:
                 articles = parse_gdelt(body, retrieved, raw_relative, config) if source["kind"] == "gdelt" else parse_rss(body, retrieved, raw_relative, source, config)
                 new = save_articles(root, articles)
                 source_status.update(status="ok", retrieved_at=retrieved, article_count=len(articles), new_article_versions=new, truncated_possible=source["kind"] == "gdelt" and len(articles) >= int(config["gdelt"]["maxrecords"]))
+                source_status["consecutive_failures"] = 0
                 source_status["known_publisher_timestamps"] = sum(a["publish_time"] is not None for a in articles)
                 newest = max((a["publish_time"] for a in articles if a["publish_time"]), default=None)
                 source_status["latest_known_publish_time"] = newest
@@ -316,12 +350,45 @@ def collect(root: Path) -> dict[str, Any]:
                 summary["new_article_versions"] += new
             except Exception as exc:  # One unavailable source must not halt other prospective feeds.
                 source_status.update(status="error", error=f"{type(exc).__name__}: {exc}", recorded_at=now_utc())
+                if source["kind"] == "gdelt":
+                    due, failures = next_gdelt_attempt(previous_status, exc, config["gdelt"], source_status["recorded_at"])
+                    source_status.update(next_attempt_at=due, consecutive_failures=failures)
                 LOG.warning("News source %s failed: %s", source["name"], exc)
             summary["sources"].append(source_status)
         summary["completed_at"] = now_utc()
         summary["status"] = "ok" if all(s["status"] == "ok" for s in summary["sources"]) else "partial" if any(s["status"] == "ok" for s in summary["sources"]) else "failed"
+        eligible = read_articles(root, summary["completed_at"])
+        summary["relevant_stories"] = len({a["story_id"] for a in eligible if is_oil_relevant(a)})
         write_once(root / "data/news/runs" / (run_id + ".json"), summary)
         return summary
+
+
+def is_oil_relevant(article: dict) -> bool:
+    text = (article["title"] + " " + article.get("feed_description", "")).casefold()
+    return bool(re.search(r"palm oil|oil palm|minyak sawit|soy(?:bean|a)? oil|(?:cooking|vegetable|edible) oil|\bcpo\b|biodiesel mandate|export levy", text))
+
+
+def collector_health(root: Path, as_of: str | None = None) -> dict:
+    cutoff = _instant(as_of or now_utc())
+    runs = [json.loads(p.read_text()) for p in (root / "data/news/runs").glob("*.json")]
+    runs = sorted([r for r in runs if _instant(r["completed_at"]) <= cutoff], key=lambda r: r["completed_at"])
+    cloud = [r for r in runs if r.get("runner") == "github_actions"]
+    scheduled = [r for r in cloud if r.get("trigger") == "schedule"]
+    # Occupied UTC 3-hour bins offset to minute17; a scheduler diagnostic, not an SLA.
+    def slot(t: str) -> int:
+        return int((_instant(t).timestamp()-17*60)//(3*3600))
+    slots = {slot(r["started_at"]) for r in scheduled}
+    expected = max(0, slot(cutoff.isoformat())-min(slots)+1) if slots else 0
+    articles = read_articles(root, cutoff.isoformat())
+    return {"schedule": "GitHub Actions, minute17 every3 hours UTC", "storage": "cumulative Actions artifacts; 90-day retention",
+            "completed_runs": len(runs), "github_runs": len(cloud),
+            "github_runs_with_usable_feed": sum(r["status"] in {"ok", "partial"} for r in cloud),
+            "scheduled_expected_slots": expected, "scheduled_completed_slots": len(slots),
+            "scheduled_uptime_fraction": len(slots)/expected if expected else None,
+            "uptime_caveat": "unmeasured until scheduled runs exist; occupied 3-hour bins, no availability guarantee",
+            "source_success_fraction": sum(s["status"] == "ok" for r in cloud for s in r["sources"])/max(1, sum(len(r["sources"]) for r in cloud)) if cloud else None,
+            "eligible_records": len(articles), "relevant_stories": len({a["story_id"] for a in articles if is_oil_relevant(a)}),
+            "last_completed_at": runs[-1]["completed_at"] if runs else None}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -386,7 +453,7 @@ def extract_local(article: dict[str, Any], extracted_at: str | None = None) -> N
     """High-abstention supplied-text rules, unvalidated; no causal inference."""
     evidence = article["title"] + ("\n" + article["feed_description"] if article.get("feed_description") else "")
     text = evidence.casefold()
-    commodities = [name for name, pattern in [("palm_oil", r"palm oil"), ("soybean_oil", r"soy(?:bean|a)? oil"), ("cooking_oil", r"(?:cooking|vegetable|edible) oil")] if re.search(pattern, text)]
+    commodities = [name for name, pattern in [("palm_oil", r"palm oil|oil palm|minyak sawit|\bcpo\b"), ("soybean_oil", r"soy(?:bean|a)? oil"), ("cooking_oil", r"(?:cooking|vegetable|edible) oil")] if re.search(pattern, text)]
     countries = [country for country, pattern in [("Indonesia", r"indonesia[n]?"), ("Malaysia", r"malaysia[n]?"), ("Singapore", r"singapore"), ("India", r"india[n]?"), ("China", r"china|chinese"), ("United States", r"united states"), ("Brazil", r"brazil"), ("Argentina", r"argentina") ] if re.search(r"\b(?:" + pattern + r")\b", text)]
     if "United States" not in countries and re.search(r"\bUS\b|\bU\.S\.", evidence):
         countries.append("United States")
@@ -502,6 +569,8 @@ def main() -> None:
         runs = sorted((args.root / "data/news/runs").glob("*.json"))
         result = {"articles": len(articles), "latest_run": json.loads(runs[-1].read_text()) if runs else None, "first_retrieval": min((a["first_seen_at"] for a in articles), default=None)}
     print(json.dumps(result, indent=2, ensure_ascii=False))
+    if args.command == "collect" and result["status"] == "failed":
+        raise SystemExit(1)  # Hosted runs must surface complete source failure.
 
 
 if __name__ == "__main__":

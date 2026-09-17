@@ -1,144 +1,53 @@
-# Prospective news collection in the cooking-oil slice
+# Prospective news operations
 
-Collection started **17 September 2026 at 08:11 UTC**. The first run archived
-287 article metadata records: 155 SFA newsroom items, 124 SFA circulars and 8
-USDA ARS items. These are an initial feed inventory, not 287 new events today.
-All become usable only from the timestamp at which this system retrieved them.
-Initial GDELT output was the empty object `{}`; it supplied no usable articles.
-That is not evidence that no cooking-oil news occurred.
+News is a descriptive, unvalidated layer. Collection time is the information boundary: publication dates and GDELT discovery times never substitute for actual retrieval. All revisions, response bytes and extraction versions remain immutable. The earliest local archive began on 17 September 2026; the hosted archive starts at deployment without backdating earlier local records.
 
-## Run and schedule
+## Scheduler and persistence
 
-From the project root:
+`.github/workflows/collect-news.yml` runs on GitHub-hosted Linux at minute 17 every three hours UTC, or through `gh workflow run collect-news.yml`. Collection uses the standard library: no model fitting, paid LLM, dependency download or Codex session is involved. A concurrency group prevents overlapping cloud runs; the existing filesystem lock prevents overlap within a store.
 
-```sh
-PYTHONPATH=src .venv/bin/python -m retail_outlook.news collect --root .
-PYTHONPATH=src .venv/bin/python -m retail_outlook.news status --root .
-PYTHONPATH=src .venv/bin/python -m retail_outlook.news extract --root .
-PYTHONPATH=src .venv/bin/python -m retail_outlook.news annotations --root .
-```
+Each run restores the previous `news-archive` Actions artifact, validates its path inventory and SHA256 checksums, and merges only missing/identical files. It collects into the existing `data/news/` format and uploads a cumulative `news.tar.gz` archive. Thus records persist after the ephemeral runner disappears. Archive traversal, symlinks, conflicting bytes and oversized payloads are rejected before writes.
 
-The active Codex heartbeat `collect-cooking-oil-news` invokes the first command
-hourly. The desktop
-host must be awake and connected for a local scheduled run. Failures and gaps
-remain visible in immutable `data/news/runs/*.json` manifests. Feed windows are
-finite; no claim of complete news coverage is made. The 24-hour GDELT window
-overlaps normal runs. At 250 matches the manifest flags possible truncation.
-A filesystem lock prevents overlapping collectors. Read timeouts, two bounded
-attempts for transient server/network failures, five seconds between sources,
-and a 4 MB response cap limit load. GDELT additionally enforces at least 15 minutes
-between local attempts; HTTP 429 is not immediately retried. Its latest setup
-attempt was rate-limited and coverage remains unknown until a later successful
-scheduled poll.
-No full newspaper article pages are requested.
+The latest eight complete cumulative backups are retained, each expiring after 90 days. Superseded *copies* are pruned only after the current run's upload is confirmed; every retained archive still contains the complete accumulated records. Neither `data/` nor `artifacts/` is committed to the main branch. The workflow token needs `contents: read` and `actions: write` for archive retrieval and cleanup, not permission to push repository contents.
 
-## Official sources and rights
+Limits: [GitHub can delay/drop scheduled jobs or disable schedules in inactive public repositories](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule). An outage longer than retention, manual artifact deletion or storage quotas can destroy hosted history. The collector refuses known expired archives but cannot reconstruct already purged inventory. Keep an independent backup. A 512 MB archive cap fails explicitly rather than truncating records. Artifact access follows repository visibility; no commercial article bodies are scraped or packaged.
 
-| Source | Advertised access and handling |
-|---|---|
-| GDELT DOC API | [Official API documentation](https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/); oil-related title, URL, source and discovery metadata only. Publisher article rights remain with the publisher. |
-| Singapore Food Agency | [Official RSS subscription page](https://www.sfa.gov.sg/news-publications/newsroom/subscribe-to-sfa-rss-feeds); newsroom and circular feed metadata, attribution and links retained. These feeds currently expose timestamp strings without a timezone. |
-| FAO | [Official newsroom](https://www.fao.org/newsroom/en) advertises [FAO newsroom RSS](https://www.fao.org/feeds/fao-newsroom-rss). The newsroom HTML blocked a direct request, but the advertised RSS feed returned HTTP 200. Only supplied feed data is archived and title/link metadata is normalized. |
-| USDA ARS | [Official RSS listing](https://www.ars.usda.gov/news-events/rss-feeds/) advertises research-news feed. The initial feed's latest article is January 2025: this is a stale supplementary source, not current market coverage. |
-| USDA NASS | [Official subscription page](https://data.nass.usda.gov/Newsroom/Syndication/News/index.php) advertises a feed that returned HTTP 403. Disabled after the first attempt; no access-control bypass. |
-
-Settings and subjective source credibility weights are in `configs/news.yaml`.
-Official-agency metadata defaults to 0.95, other outlets to 0.50. These are
-configurable judgement weights, not estimated truth probabilities. Raw RSS may
-contain publisher-supplied descriptions; normalized articles preserve a plain-text
-feed description (capped at 20,000 characters), and rule extraction can use that
-description alongside the title. The feed supplied the descriptions; article-page
-bodies are never fetched.
-This archive is for personal research; no redistribution right
-to third-party article text is inferred from GDELT indexing.
-
-## Point-in-time contract
-
-* `publish_time`: normalized UTC only when the source supplies a timezone-aware
-  publisher timestamp; otherwise null, with the original string preserved.
-* `gdelt_seen_at`: GDELT discovery time. It is never renamed publication time.
-* `retrieved_at`: completion time of the actual response download.
-* `first_seen_at`: earliest local retrieval of the URL, preserved across revisions.
-* `available_at`: the later of this article version's retrieval and any known
-  future publisher timestamp. A revised title cannot inherit the first version's
-  eligibility date.
-* Source responses are immutable bytes plus SHA-256 and retrieval manifests in
-  `data/news/raw/`. Each article revision is immutable JSON in
-  `data/news/articles/`; unchanged re-pulls are deduplicated. A title reverting to
-  an older value creates a new revision with a new retrieval time.
-* `read_articles(root, as_of)` returns the latest **eligible** revision. It does
-  not backdate today's initial feed inventory to older publication dates.
-* Prospective event indices require both article availability and extraction
-  completion by the requested cutoff. Historical post-hoc extraction is not
-  silently treated as a feature that the running system already possessed.
-
-## Local event pipeline
-
-The initial deterministic extractor is deliberately conservative and **has not
-passed human validation**. It detects some explicit export restrictions, weather,
-harvest, tariff, subsidy, conflict and price moves in supplied titles/descriptions.
-Text containing negation, speculation, questions or reversals abstains. It infers a price/supply/demand
-direction only from an explicit subject-and-move phrase. For example:
-
-* “Palm oil prices rise” → `price_move`, `cost_up`.
-* “Indonesia bans palm oil exports” → `export_restriction`, direction `UNKNOWN`.
-* “Indonesia may ban palm oil exports” → `UNKNOWN`.
-
-Strict `NewsEvent` fields cover event type, affected commodities, countries,
-direction, magnitude, duration, certainty, credibility, publication time,
-evidence text, article identity, source URL and extraction provenance. Magnitude,
-duration and certainty stay `UNKNOWN` unless supported; the local rules do not
-manufacture them. No LLM is currently called. Extraction caches use article
-content hash plus extractor version. The enforceable current call cost is $0;
-config rejects paid backends, paid historical backfill, or a cap above $50/month.
-Any future paid integration must implement a reservation ledger before network
-calls and must preserve the development cap.
-
-Exact normalized-headline clusters bound each day's story contribution to the
-highest source-credibility weight in the cluster. This is a cheap duplicate
-baseline; paraphrased syndicated articles will remain duplicates until a later
-validated clustering improvement. Daily counts, weighted direction, explicit
-supply-shock intensity and novel-story counts are descriptive outputs. Novelty
-means a previously unseen headline cluster, **not statistically measured surprise**.
-These unvalidated indices are excluded from the cooking-oil forecasting models.
-
-## Human evaluation hand-off
-
-The annotation export creates a new immutable batch each time, with no prefilled
-machine labels. It chooses at most 150 unique oil-related headline clusters
-using a deterministic hash order, assigns 100 to held-out evaluation and 50 to
-development, and marks 25 held-out items for a second reviewer. A shortage is
-explicitly reported; unrelated SFA items are not used to pad the sample. Select
-one complete batch, freeze it, and do not change story splits during tuning.
-The user labels all 150; a second reviewer independently labels the 25 marked
-items using a separate blank `second_reviewer.csv`, without seeing the first
-reviewer or extractor labels.
-
-Precision/recall and inter-reviewer agreement are **pending**, not estimated from
-synthetic fixtures. After labels are returned, report per-field and event-type
-precision/recall, abstention/coverage, error examples, and Cohen's kappa plus raw
-agreement on the second-reviewer subset. Keep the 100 held-out labels hidden
-while developing rules on the 50 development examples. Paid historical backfill
-stays disabled until the agreed held-out evaluation passes; no numerical pass
-threshold was approved yet. Proposed thresholds to freeze before labels: at least
-100 held-out stories, event-type precision >= 0.80, direction precision >= 0.90,
-and event-type macro recall >= 0.60. Report denominator and bootstrap uncertainty
-for every metric; a zero prediction denominator is undefined and cannot pass.
-These are proposed research gates, not measured results or user-approved criteria.
-Source-news evidence may inform an explicitly
-descriptive outlook section, but validated predictive value requires later
-prospective ablation tests.
-
-## Offline verification
+Local commands:
 
 ```sh
-PYTHONPATH=src .venv/bin/python -m pytest tests/test_news.py -q
+./run.sh collect-news
+./run.sh extract-news
+./run.sh annotations
+PYTHONPATH=src .venv/bin/python -m retail_outlook.news_archive pack --root .
+PYTHONPATH=src .venv/bin/python -m retail_outlook.news_archive restore-latest --root .
 ```
 
-Tests cover aware timestamps, missing/timezone-less publication times, GDELT
-discovery provenance, future-dated items, article revision leakage, reversion,
-tracking-link deduplication, unsupported and negated extraction, strict event
-schema validation, extraction-time cutoffs, duplicate weight caps, overlapping
-collectors and blocked paid backends.
-Empty GDELT objects without an `articles` list are recorded as an explicit source
-error with unknown effective coverage, not as a successful zero-news result.
+The second archive command needs an authenticated GitHub CLI. The local pre-deployment archive remains intact; cloud restore merges new records without pretending those records had been collected earlier.
+
+## Access and backoff
+
+GDELT has a 24-hour overlapping window, at most 250 results, and flags possible truncation. Its combined query covers palm oil, crude palm oil, CPO, soybean oil, stocks, exports, export levy, biodiesel mandate and cooking oil (including Singapore/Malaysia/Indonesia). Global terms avoid excluding a supply shock outside those countries. Local relevance additionally recognizes `oil palm` and `minyak sawit`. These are keyword counts, not validated market-event counts.
+
+There are at most two in-run attempts for transient server/network failures, with exponential delay plus jitter and a 4 MB response cap. HTTP429 is **not** retried immediately. GDELT failures persist an exponential cooldown across scheduled runs (15-minute base, increasing to 24 hours, plus jitter). A server `Retry-After`, including an HTTP date, is a lower bound and is never truncated. Polls before the stored deadline are explicitly deferred. Successful feeds continue when another source fails.
+
+GDELT `{}` or another invalid schema is an error with unknown coverage, not a successful zero-news response. RSS without publisher timezone retains the raw date and a null normalized publication time. A future publisher date delays eligibility even when a response has already arrived.
+
+## Rights and source limitations
+
+See [the source register](sources.md) for permission/discovery links. Only publisher-supplied RSS and GDELT metadata are accessed; linked commercial article pages are never fetched. Titles, links, source notices, descriptions and response hashes are retained. A readable URL does not imply unrestricted redistribution rights.
+
+MPOB PALMOILIS RSS supplies Malay/English publication titles, often older technical/consumer material rather than current market events. ANTARA's business RSS is a broad feed and may have no oil stories in a poll. USDA ARS has returned stale material. SFA publisher dates have lacked timezones. These limitations remain in each run manifest. NASS remains disabled after HTTP403, without bypass.
+
+## Measured operations
+
+`collector_health(root, as_of)` reports completed hosted runs, runs with a usable feed, per-source success, expected/occupied three-hour UTC schedule bins, last completion and keyword-relevant story counts. Future runs and future-dated articles are excluded. The uptime fraction is unavailable until a scheduled run exists; a successful manual deployment check does not establish scheduler uptime. Missed slots remain gaps, not reconstructed records.
+
+Raw feeds can expose article bodies as descriptions. This implementation stores only what the permitted feed supplies and never requests the linked page. Credibility weights are configurable judgement priors, not calibrated truth probabilities.
+
+## Extraction and human labels
+
+The strict `NewsEvent` schema and conservative local rules are unchanged in purpose: unsupported magnitude/duration/certainty stay UNKNOWN; negation, speculation and ambiguous reversals abstain. The cache key includes article content and extractor version. Prospective news indices require both article availability and extraction completion by the cutoff. These indices are not used in historical forecasts.
+
+Human labelling is **planned**, not completed: approximately 50 development and 100 held-out stories, with a second reviewer independently labelling 25 held-out stories. The export writes blank, deterministic story-separated packs and reports insufficiency. Do not infer precision/recall from synthetic tests or count technical keyword mentions as market events. Precision/recall, abstention and reviewer agreement remain unmeasured.
+
+No paid backend exists; configuration rejects enabling one or exceeding the USD50 monthly development cap. Paid historical backfill remains disabled until independent evaluation and a separate implementation are approved. The current LLM cost is zero.

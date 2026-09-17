@@ -1,0 +1,59 @@
+name: Collect cooking-oil news
+on:
+  schedule:
+    - cron: '17 */3 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: cooking-oil-news
+  cancel-in-progress: false
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PYTHONPATH: src
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Restore cumulative immutable archive
+        id: restore
+        run: python -m retail_outlook.news_archive restore-latest --root .
+      - name: Collect permitted metadata and supplied RSS
+        id: collect
+        run: python -m retail_outlook.news collect --root .
+      - name: Verify and package cumulative archive
+        id: pack
+        if: always() && steps.restore.outcome == 'success'
+        run: python -m retail_outlook.news_archive pack --root .
+      - name: Persist raw records beyond the runner
+        id: upload
+        if: always() && steps.pack.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: news-archive
+          path: artifacts/transfer/news.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+      - name: Report measured health
+        if: always() && steps.restore.outcome == 'success'
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from retail_outlook.news import collector_health
+          result = collector_health(Path.cwd())
+          print(json.dumps(result, indent=2))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write('```json\n' + json.dumps(result, indent=2) + '\n```\n')
+          PY
+      - name: Bound storage to eight cumulative backups
+        if: always() && steps.upload.outcome == 'success'
+        run: python -m retail_outlook.news_archive prune --root .

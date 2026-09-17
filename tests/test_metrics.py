@@ -16,7 +16,7 @@ def test_metrics_hand_calculation():
 
 def test_identical_forecasts_have_zero_effect_interval():
     rows = []
-    for model in ("seasonal_naive", "ets"):
+    for model in ("random_walk", "seasonal_naive", "ets"):
         for i in range(24):
             rows.append(dict(scope="audit", horizon=3, model=model, origin=str(i), mase=1.,
                 absolute_error=1., fallback=None, calibration_n=24, mape=1., smape=1., pinball=.2,
