@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "retail-outlook"
+version = "0.1.0"
+description = "Release-aware Singapore cooking-oil research slice"
+requires-python = ">=3.11"
+dependencies = ["pandas>=2.2,<3", "numpy>=1.26,<3", "scipy>=1.13,<2", "statsmodels>=0.14,<0.15", "pyarrow>=17,<24", "duckdb>=1.1,<2", "httpx>=0.27,<1", "openpyxl>=3.1,<4", "PyYAML>=6,<7", "pydantic>=2.9,<3", "streamlit>=1.40,<2", "plotly>=5.24,<7", "feedparser>=6,<7", "matplotlib>=3.9,<4"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "ruff>=0.8,<1"]
+
+[project.scripts]
+retail-outlook = "retail_outlook.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

@@ -1,0 +1,30 @@
+good: cooking_oil
+seed: 20260917
+horizons: [1, 3, 6]
+training_start: '2015-01-01'
+initial_training_end: '2019-12-01'
+evaluation_start: '2020-01-01'
+origin_day: 28
+release_days:
+  cpi_cooking_oil: 28
+  palm_oil_usd: 15
+  soy_oil_usd: 15
+  usd_sgd: 15
+models: [seasonal_naive, ets, arima, distributed_lag]
+samples: 1500
+bootstrap_repetitions: 1000
+bootstrap_block_months: 12
+max_driver_lag: 3
+calibration_minimum: 24
+unchanged_band:
+  recipe: half_training_sd_log_changes
+  floor_percentage_points: 0.1
+llm:
+  monthly_cap_usd: 50
+  provider: local_rules
+  paid_historical_backfill: false
+  extraction_validation_passed: false
+news:
+  enabled: true
+  collection_frequency: hourly
+  historical_model_feature: false
